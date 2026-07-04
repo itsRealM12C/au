@@ -14,6 +14,7 @@
     --dim: #808080;
     --line: #333333;
     --panel: #0a0a0a;
+    -webkit-tap-highlight-color: rgba(255, 255, 255, 0);
   }
   * { box-sizing: border-box; }
   body {
@@ -24,6 +25,7 @@
     max-width: 780px;
     margin: 0 auto;
     line-height: 1.5;
+    -webkit-tap-highlight-color: rgba(255, 255, 255, 0);
   }
   .header { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; }
   h3 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
@@ -70,6 +72,7 @@
     text-align: center;
     cursor: pointer;
     transition: border-color 0.2s ease;
+    -webkit-tap-highlight-color: rgba(255, 255, 255, 0);
   }
   .dropzone:hover, .dropzone.drag { border-color: var(--fg); }
   .dropzone svg { display: block; margin: 0 auto 10px; width: 30px; height: 30px; stroke: var(--fg); }
@@ -150,7 +153,7 @@
     font-size: 11.5px; font-weight: 700; padding: 5px 14px; border-radius: 999px; cursor: pointer;
   }
 
-     -webkit-tap-highlight-color: rgba(255, 255, 255, 0);
+  -webkit-tap-highlight-color: rgba(255, 255, 255, 0);
 </style>
 </head>
 <body>
@@ -189,7 +192,7 @@
     <path d="M12 12v6M9.5 14.5L12 12l2.5 2.5"/>
   </svg>
   <div class="dz-title">Drop a file or click to browse</div>
-  <div class="dz-sub">raw GSM 06.10 payload / partition dump</div>
+  <div class="dz-sub"></div>
   <div class="filename-pill" id="filenamePill"><span id="filenameText"></span></div>
 </label>
 <input type="file" id="fileInput">
@@ -414,6 +417,16 @@ function log(msg, cls) {
 }
 
 async function handleFile(file) {
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+
+  // Strictly enforce the "AU" header constraint ("A" = 0x41, "U" = 0x55).
+  // Rejects files utilizing generic ".snd" signatures or footers.
+  if (bytes.length < 2 || bytes[0] !== 0x41 || bytes[1] !== 0x55) {
+    alert("Extraction aborted: The file does not start with a valid 'AU' header.");
+    return;
+  }
+
   headerDump.textContent = '';
   headerDump.style.display = 'none';
   headerLabel.style.display = 'none';
@@ -426,8 +439,6 @@ async function handleFile(file) {
   filenamePill.style.display = 'inline-flex';
   filenameText.textContent = file.name;
 
-  const buffer = await file.arrayBuffer();
-  const bytes = new Uint8Array(buffer);
   const headerSize = Math.max(0, parseInt(document.getElementById('headerSize').value) || 0);
   const sampleRate = Math.max(1000, parseInt(document.getElementById('sampleRate').value) || 8000);
 
@@ -437,7 +448,6 @@ async function handleFile(file) {
 
   const payload = bytes.slice(headerSize);
   state = { file, payload, sampleRate };
-  // The sizing log string was removed from here.
 }
 
 function renderResult(name, samples, sampleRate, spec, extra) {

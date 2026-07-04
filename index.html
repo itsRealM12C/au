@@ -223,7 +223,7 @@
 <div class="controls">
   <div class="control">
     <label>Header size (bytes)</label>
-    <input type="number" id="headerSize" value="32" min="0">
+    <input type="number" id="headerSize" value="0" min="0">
   </div>
   <div class="control">
     <label>Sample rate (Hz)</label>
@@ -838,10 +838,30 @@ async function runFfmpegGsm(payloadBytes, sampleRate, fftSize) {
   ff.FS('writeFile', 'payload.bin', payloadBytes);
   await ff.run('-f', 'gsm', '-ar', String(sampleRate), '-ac', '1', '-i', 'payload.bin', 'out.wav', '-y');
   const outData = ff.FS('readFile', 'out.wav');
+
+  // Sanity check for silent truncation inside the wasm decode: a GSM 06.10
+  // frame is always exactly 33 bytes -> 20ms of audio, regardless of sample
+  // rate. If ffmpeg.wasm's output is meaningfully shorter than what the input
+  // byte count implies, some frames were silently dropped (a known failure
+  // mode with ffmpeg.wasm's in-memory FS on some builds/inputs) rather than
+  // actually being "not speech."
+  const expectedFrames = Math.floor(payloadBytes.length / 33);
+  const expectedDurationSec = expectedFrames * 0.02;
+
   const parsed = parseWav(outData.buffer.slice(outData.byteOffset, outData.byteOffset + outData.byteLength));
+  const actualDurationSec = parsed.samples.length / parsed.sampleRate;
+  const truncated = expectedDurationSec > 0 && (actualDurationSec < expectedDurationSec * 0.95);
+
   const spec = analyzeSpectrum(parsed.samples, parsed.sampleRate, fftSize);
   if (!spec) throw new Error('spectral analysis failed on ffmpeg output');
-  return { samples: parsed.samples, sampleRate: parsed.sampleRate, spec };
+  return {
+    samples: parsed.samples,
+    sampleRate: parsed.sampleRate,
+    spec,
+    expectedDurationSec,
+    actualDurationSec,
+    truncated,
+  };
 }
 
 // Turns known cryptic errors (SharedArrayBuffer missing, etc.) into an
@@ -875,7 +895,8 @@ gsmBtn.addEventListener('click', async () => {
     gsmBtn.textContent = 'Decoding...';
 
     const fftSize = parseInt(document.getElementById('fftSize').value) || 32768;
-    const { samples, sampleRate, spec } = await runFfmpegGsm(state.payload, state.sampleRate, fftSize);
+    const result = await runFfmpegGsm(state.payload, state.sampleRate, fftSize);
+    const { samples, sampleRate, spec, expectedDurationSec, actualDurationSec, truncated } = result;
 
     // Replace any previous GSM candidate (in case of re-run) then add fresh.
     state.candidates = state.candidates.filter(c => !c.name.startsWith('GSM 06.10'));
@@ -883,6 +904,14 @@ gsmBtn.addEventListener('click', async () => {
     renderCandidates();
 
     gsmStatus.textContent += `\nDone: ${samples.length} samples @ ${sampleRate}Hz, score ${spec.score.toFixed(1)}\n`;
+    gsmStatus.textContent += `Expected ~${expectedDurationSec.toFixed(2)}s from input byte count (${state.payload.length} bytes / 33 bytes-per-frame), got ${actualDurationSec.toFixed(2)}s decoded.\n`;
+    if (truncated) {
+      gsmStatus.textContent +=
+        `⚠ TRUNCATION DETECTED: decoded audio is meaningfully shorter than the input implies. ` +
+        `This means ffmpeg.wasm silently dropped frames — the missing part isn't "not speech," ` +
+        `it's audio that was never decoded at all. If the CLI produces a full-length result and ` +
+        `this doesn't, that's very likely the source of the web/CLI mismatch.\n`;
+    }
     gsmBtn.textContent = 'Re-decode as GSM 06.10';
     gsmBtn.disabled = false;
   } catch (err) {
